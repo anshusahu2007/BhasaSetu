@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pytest
+httpx
+torch>=2.5.0
+transformers>=4.46.3,<5.0.0
+sentencepiece
+indic-nlp-library
+sacremoses
+pandas

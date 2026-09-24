@@ -1,0 +1,59 @@
+# =========================
+# PYTHON
+# =========================
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =========================
+# SECRETS / PRIVATE
+# =========================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+credentials/
+
+# =========================
+# ANDROID
+# =========================
+local.properties
+.gradle/
+.idea/
+**/build/
+**/.cxx/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+
+# =========================
+# LARGE ML MODEL FILES
+# =========================
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# Large ONNX model files
+*.onnx
+*.onnx.data
+
+# Model conversion generated outputs
+model_conversion/onnx_output/
+model_conversion/onnx_output_no_cache/
+conversion_workspace/onnx_output/
