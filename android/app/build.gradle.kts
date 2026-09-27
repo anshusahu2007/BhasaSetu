@@ -59,6 +59,10 @@ dependencies {
     // ONNX Runtime for Offline ML Inference
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.0")
     
+    // Vosk Offline Speech Recognition
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+    
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.kotlinx.serialization)
     implementation(libs.okhttp)

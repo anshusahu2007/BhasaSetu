@@ -10,12 +10,12 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.widget.Toast
+import com.bhasasetu.app.data.stt.VoskOfflineSpeechManager
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -227,114 +227,57 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
         return actType.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
-    val speechRecognizer = remember {
-        val isOffline = !isNetworkAvailable()
-        Log.d("VOICE", "Internet available: ${!isOffline}")
-        
-        val recognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-            Log.d("VOICE", "On-device recognizer available = true")
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-            Log.d("VOICE", "On-device recognizer available = false")
-            SpeechRecognizer.createSpeechRecognizer(context)
-        }
-        recognizer
-    }
+    // 100% Offline Vosk Speech Recognizer
+    val speechManager = remember { VoskOfflineSpeechManager(context) }
+    val coroutineScope = rememberCoroutineScope()
 
-    val recognitionListener = remember {
-        object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) { 
-                Log.d("SpeechRecog", "Ready for speech")
-                isListening = true 
-            }
-            override fun onEndOfSpeech() { 
-                Log.d("SpeechRecog", "End of speech")
-                isListening = false 
-            }
-            override fun onError(error: Int) {
-                Log.e("VOICE", "Speech recognition error: $error")
-                isListening = false
-                val isOffline = !isNetworkAvailable()
-                val message = when (error) {
-                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
-                        if (isOffline) {
-                            Log.w("VOICE", "Offline speech model unavailable or network required")
-                            "Offline Hindi voice recognition is not available on this device. Please download Hindi offline speech recognition from your phone's Speech Services settings or enter text manually."
-                        } else {
-                            "Network error. Please check your internet connection."
-                        }
-                    }
-                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech was recognized. Please try again."
-                    SpeechRecognizer.ERROR_AUDIO -> "Microphone error. Please check access."
-                    SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Voice input not supported for this language."
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service is busy. Please wait."
-                    else -> "Speech recognition error. Please try again."
-                }
-                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-            }
-            override fun onResults(results: Bundle?) {
-                isListening = false
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) {
-                    Log.d("SpeechRecog", "Result: ${matches[0]}")
-                    if (currentSpeechModeIsStudent) {
-                        viewModel.onStudentSpeechRecognized(matches[0])
-                    } else {
-                        viewModel.onHindiTextChanged(matches[0], source = "voice")
-                    }
-                }
-            }
-            override fun onBeginningOfSpeech() { Log.d("SpeechRecog", "Beginning of speech") }
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        }
+    LaunchedEffect(Unit) {
+        speechManager.ensureModelLoaded()
     }
 
     DisposableEffect(Unit) {
-        speechRecognizer.setRecognitionListener(recognitionListener)
-        onDispose { speechRecognizer.destroy() }
+        onDispose { speechManager.release() }
     }
 
     val requestPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
         if (isGranted && pendingRecognition) {
             pendingRecognition = false
-            // The LaunchedEffect below will trigger startSpeech
         }
     }
 
     val startSpeech = { isStudent: Boolean ->
         currentSpeechModeIsStudent = isStudent
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            val languageCode = if (isStudent) {
-                when (uiState.selectedLanguage) {
-                    "Santali" -> "sat-IN"
-                    "Ho" -> "hoc-IN"
-                    "Mundari" -> "unr-IN"
-                    else -> "hi-IN"
-                }
+            if (isListening) {
+                speechManager.stopListening()
+                isListening = false
             } else {
-                "hi-IN"
-            }
-            
-            val isOffline = !isNetworkAvailable()
-            Log.d("VOICE", "Starting recognition. Lang: $languageCode, Offline Mode: $isOffline")
-            if (isOffline) {
-                Log.d("VOICE", "Using on-device recognizer (EXTRA_PREFER_OFFLINE = true)")
-            } else {
-                Log.d("VOICE", "Using online recognizer")
-            }
-
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageCode)
-                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-                if (isOffline) {
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                coroutineScope.launch {
+                    val loaded = speechManager.ensureModelLoaded()
+                    if (loaded) {
+                        speechManager.startListening(
+                            onResult = { recognizedText ->
+                                isListening = false
+                                speechManager.stopListening()
+                                if (currentSpeechModeIsStudent) {
+                                    viewModel.onStudentSpeechRecognized(recognizedText)
+                                } else {
+                                    viewModel.onHindiTextChanged(recognizedText, source = "voice")
+                                }
+                            },
+                            onError = { errorMsg ->
+                                isListening = false
+                                Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
+                            },
+                            onListeningStarted = {
+                                isListening = true
+                            }
+                        )
+                    } else {
+                        Toast.makeText(context, "Offline speech model loading. Please wait...", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
-            speechRecognizer.startListening(intent)
         } else {
             pendingRecognition = true
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -844,20 +787,6 @@ fun TranslationResultCard(
                         Text(phonetic, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-            }
-
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (status.contains("offline")) Color(0xFFE8F5E9) else Color(0xFFE3F2FD))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    text = if (status.contains("offline")) "Offline • Room Database" else "Online • AI Translation",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (status.contains("offline")) Color(0xFF2E7D32) else Color(0xFF1976D2),
-                    fontWeight = FontWeight.Bold
-                )
             }
         }
     }
