@@ -112,8 +112,15 @@ class TranslationRepository(
             "No directional dictionary query for $sourceLanguage -> $targetLanguage"
         }
 
+        // Auto-initialize database if the target/source dictionary is empty
+        val currentDictCount = try { translationDao.getCountForLanguage(dictionaryLanguage) } catch (_: Exception) { 0 }
+        if (currentDictCount == 0) {
+            Log.w("ROOM", "Database for $dictionaryLanguage is empty (count=0). Initializing database from assets now...")
+            initializeDatabase(TranslationLoader(context))
+        }
+
         if (isHoTranslation) {
-            val hoRows = try { translationDao.getCountForLanguage("Ho") } catch (e: Exception) { 0 }
+            val hoRows = try { translationDao.getCountForLanguage("Ho") } catch (_: Exception) { 0 }
             Log.d("HO-DEBUG", "sourceLanguage=$sourceLanguage")
             Log.d("HO-DEBUG", "targetLanguage=$targetLanguage")
             Log.d("HO-DEBUG", "input=$rawInput")
@@ -140,7 +147,9 @@ class TranslationRepository(
                 } else {
                     val list = translationDao.getTranslationsForLanguage(targetLanguage)
                     list.firstOrNull {
-                        normalizeText(it.hindiText).equals(normalizedInput, ignoreCase = true)
+                        normalizeText(it.hindiText).equals(normalizedInput, ignoreCase = true) ||
+                        it.hindiText.trim().equals(rawInput, ignoreCase = true) ||
+                        it.hindiText.trim().equals(normalizedInput, ignoreCase = true)
                     }
                 }
             } else if (targetLanguage == "Hindi") {
@@ -151,7 +160,11 @@ class TranslationRepository(
                 } else {
                     val list = translationDao.getTranslationsForLanguage(sourceLanguage)
                     list.firstOrNull {
-                        normalizeText(it.translatedText).equals(normalizedInput, ignoreCase = true)
+                        normalizeText(it.translatedText).equals(normalizedInput, ignoreCase = true) ||
+                        it.translatedText.trim().equals(rawInput, ignoreCase = true) ||
+                        it.translatedText.trim().equals(normalizedInput, ignoreCase = true) ||
+                        normalizeText(it.phoneticText).equals(normalizedInput, ignoreCase = true) ||
+                        it.phoneticText.trim().equals(rawInput, ignoreCase = true)
                     }
                 }
             } else {

@@ -3,6 +3,7 @@ package com.bhasasetu.app
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -30,6 +31,58 @@ class TranslationUnitTest {
         assertTrue("Hindi 'नमस्ते' must exist in ho.json", namasteEntry != null)
         assertEquals("Johar", namasteEntry?.translation)
         assertEquals("Johar", namasteEntry?.phonetic)
+    }
+
+    @Test
+    fun testTenHindiToHoSentences() {
+        val hoFile = File("src/main/assets/ho.json")
+        val list = json.decodeFromString<List<TestJsonTranslation>>(hoFile.readText())
+        val hoMap = list.associate { it.hindi to it.translation }
+
+        val testCases = listOf(
+            "नमस्ते" to "Johar",
+            "धन्यवाद" to "Sarhao",
+            "बैठ जाओ" to "Durop pe",
+            "ध्यान से सुनो" to "Ajom me",
+            "दोहराओ" to "Mene me",
+            "लिखो" to "Ol me",
+            "पढ़ो" to "Pao me",
+            "आओ" to "Huju me",
+            "जाओ" to "Sen me",
+            "अच्छा" to "Bugi"
+        )
+
+        for ((hindiInput, expectedHo) in testCases) {
+            val result = hoMap[hindiInput]
+            assertNotNull("Translation for '$hindiInput' should exist", result)
+            assertEquals("Hindi -> Ho translation mismatch for '$hindiInput'", expectedHo, result)
+        }
+    }
+
+    @Test
+    fun testTenHoToHindiSentences() {
+        val hoFile = File("src/main/assets/ho.json")
+        val list = json.decodeFromString<List<TestJsonTranslation>>(hoFile.readText())
+        val reverseHoMap = list.associate { it.translation.lowercase() to it.hindi }
+
+        val testCases = listOf(
+            "johar" to "नमस्ते",
+            "sarhao" to "धन्यवाद",
+            "durop pe" to "बैठ जाओ",
+            "ajom me" to "ध्यान से सुनो",
+            "mene me" to "दोहराओ",
+            "ol me" to "लिखो",
+            "pao me" to "पढ़ो",
+            "huju me" to "आओ",
+            "sen me" to "जाओ",
+            "bugi" to "अच्छा"
+        )
+
+        for ((hoInput, expectedHindi) in testCases) {
+            val result = reverseHoMap[hoInput.lowercase()]
+            assertNotNull("Reverse translation for '$hoInput' should exist", result)
+            assertEquals("Ho -> Hindi translation mismatch for '$hoInput'", expectedHindi, result)
+        }
     }
 
     @Test

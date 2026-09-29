@@ -284,8 +284,8 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
                 speechManager.stopListening()
                 isListening = false
             } else {
-                if (!isStudent) {
-                    // Teacher Mode: Hindi offline speech recognition via Vosk model
+                if (!isStudent || selectedLang == "Hindi") {
+                    // Offline speech recognition via Vosk model for Hindi
                     Log.d("STT-DEBUG", "engine=VoskOfflineSpeechManager")
                     Log.d("STT-DEBUG", "startListening=true")
                     coroutineScope.launch {
@@ -296,7 +296,11 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
                                     isListening = false
                                     speechManager.stopListening()
                                     Log.d("STT-DEBUG", "final=$recognizedText")
-                                    viewModel.onHindiTextChanged(recognizedText, source = "voice")
+                                    if (isStudent) {
+                                        viewModel.onStudentSpeechRecognized(recognizedText)
+                                    } else {
+                                        viewModel.onHindiTextChanged(recognizedText, source = "voice")
+                                    }
                                 },
                                 onError = { errorMsg ->
                                     isListening = false
@@ -312,24 +316,20 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
                         }
                     }
                 } else {
+                    // Student Mode for Tribal Languages: Android System SpeechRecognizer
                     val localeTag = when (selectedLang) {
                         "Santali" -> "sat-IN"
                         "Mundari" -> "unr-IN"
                         "Ho" -> "hoc-IN"
                         else -> "hi-IN"
                     }
-                    val onDeviceRecognitionAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                        SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-                    Log.d("STT-DEBUG", "engine=SpeechRecognizer")
-                    Log.d("STT-DEBUG", "onDeviceAvailable=$onDeviceRecognitionAvailable locale=$localeTag")
-                    Log.d("STUDENT-STT", "engine=Android on-device SpeechRecognizer available=$onDeviceRecognitionAvailable locale=$localeTag")
 
-                    if (!onDeviceRecognitionAvailable) {
-                        Log.e("STT-DEBUG", "error=on-device SpeechRecognizer unavailable for $localeTag")
-                        Log.e("STUDENT-STT", "error=on-device SpeechRecognizer unavailable for $localeTag")
+                    if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                        Log.e("STT-DEBUG", "error=SpeechRecognizer.isRecognitionAvailable is false")
+                        Log.e("STUDENT-STT", "error=SpeechRecognizer.isRecognitionAvailable is false")
                         Toast.makeText(
                             context,
-                            "Offline speech recognition for $selectedLang is not available on this device. Please type the text.",
+                            "Speech recognition is not available on this device.",
                             Toast.LENGTH_LONG
                         ).show()
                         return@startSpeech
@@ -341,40 +341,55 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
                         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                     }
 
-                    var recognizerToDestroy: SpeechRecognizer? = null
                     try {
-                        val speechRecognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-                        recognizerToDestroy = speechRecognizer
+                        val speechRecognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
+                            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                        } else {
+                            SpeechRecognizer.createSpeechRecognizer(context)
+                        }
+
                         speechRecognizer.setRecognitionListener(object : RecognitionListener {
                             override fun onReadyForSpeech(params: Bundle?) {
                                 isListening = true
                                 Log.d("STT-DEBUG", "startListening=true locale=$localeTag")
                                 Log.d("STUDENT-STT", "startListening locale=$localeTag")
                             }
-                            override fun onBeginningOfSpeech() {}
+                            override fun onBeginningOfSpeech() {
+                                isListening = true
+                                Log.d("STT-DEBUG", "onBeginningOfSpeech locale=$localeTag")
+                            }
                             override fun onRmsChanged(rmsdB: Float) {}
                             override fun onBufferReceived(buffer: ByteArray?) {}
-                            override fun onEndOfSpeech() { isListening = false }
+                            override fun onEndOfSpeech() {
+                                isListening = false
+                                Log.d("STT-DEBUG", "onEndOfSpeech locale=$localeTag")
+                            }
                             override fun onError(error: Int) {
                                 isListening = false
-                                speechRecognizer.destroy()
-                                Log.w("OFFLINE-STT", "On-device recognition failed for $localeTag: error=$error")
-                                Log.e("STT-DEBUG", "error=SpeechRecognizer error=$error locale=$localeTag")
+                                try { speechRecognizer.destroy() } catch (_: Exception) {}
+                                val errorMsg = when (error) {
+                                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+                                        "Offline voice recognition for $selectedLang is not available on this device."
+                                    SpeechRecognizer.ERROR_NO_MATCH ->
+                                        "No speech recognized. Please try speaking again."
+                                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                                        "Microphone permission required for speech recognition."
+                                    else ->
+                                        "Offline voice recognition for $selectedLang is not available on this device."
+                                }
+                                Log.e("STT-DEBUG", "error=SpeechRecognizer error=$error locale=$localeTag message=$errorMsg")
                                 Log.e("STUDENT-STT", "error=SpeechRecognizer error=$error locale=$localeTag")
-                                Toast.makeText(
-                                    context,
-                                    "Offline speech recognition for $selectedLang is not available on this device. Please type the text.",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
                             }
                             override fun onResults(results: Bundle?) {
                                 isListening = false
-                                speechRecognizer.destroy()
+                                try { speechRecognizer.destroy() } catch (_: Exception) {}
                                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                 if (!matches.isNullOrEmpty()) {
-                                    Log.d("STT-DEBUG", "final=${matches[0]}")
-                                    Log.d("STUDENT-STT", "final=${matches[0]}")
-                                    viewModel.onStudentSpeechRecognized(matches[0])
+                                    val recognizedText = matches[0]
+                                    Log.d("STT-DEBUG", "final=$recognizedText")
+                                    Log.d("STUDENT-STT", "final=$recognizedText")
+                                    viewModel.onStudentSpeechRecognized(recognizedText)
                                 } else {
                                     Log.e("STT-DEBUG", "error=SpeechRecognizer returned no final results locale=$localeTag")
                                     Log.e("STUDENT-STT", "error=SpeechRecognizer returned no final results locale=$localeTag")
@@ -390,58 +405,15 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
                             override fun onEvent(eventType: Int, params: Bundle?) {}
                         })
 
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            speechRecognizer.checkRecognitionSupport(
-                                intent,
-                                ContextCompat.getMainExecutor(context),
-                                object : RecognitionSupportCallback {
-                                    override fun onSupportResult(support: RecognitionSupport) {
-                                        val requestedLanguage = Locale.forLanguageTag(localeTag).language
-                                        val isInstalledOffline = support.installedOnDeviceLanguages.any {
-                                            Locale.forLanguageTag(it).language.equals(requestedLanguage, ignoreCase = true)
-                                        }
-                                        Log.d("STUDENT-STT", "installedOnDeviceLanguages=${support.installedOnDeviceLanguages} requested=$localeTag supportedOffline=$isInstalledOffline")
-                                        if (isInstalledOffline) {
-                                            try {
-                                                Log.d("STUDENT-STT", "startListening locale=$localeTag")
-                                                speechRecognizer.startListening(intent)
-                                            } catch (e: Exception) {
-                                                isListening = false
-                                                speechRecognizer.destroy()
-                                                Log.e("OFFLINE-STT", "Failed to start on-device recognition for $localeTag", e)
-                                                Log.e("STUDENT-STT", "error=failed to start locale=$localeTag: ${e.javaClass.simpleName}: ${e.message}", e)
-                                                Toast.makeText(context, "Offline speech recognition for $selectedLang is not available on this device. Please type the text.", Toast.LENGTH_LONG).show()
-                                            }
-                                        } else {
-                                            isListening = false
-                                            speechRecognizer.destroy()
-                                            Log.d("OFFLINE-STT", "No installed on-device language model for $localeTag")
-                                            Log.e("STUDENT-STT", "error=no installed offline speech model for $localeTag")
-                                            Toast.makeText(context, "Offline speech recognition for $selectedLang is not available on this device. Please type the text.", Toast.LENGTH_LONG).show()
-                                        }
-                                    }
-
-                                    override fun onError(error: Int) {
-                                        isListening = false
-                                        speechRecognizer.destroy()
-                                        Log.w("OFFLINE-STT", "Cannot verify on-device support for $localeTag: error=$error")
-                                        Log.e("STUDENT-STT", "error=checkRecognitionSupport error=$error locale=$localeTag")
-                                        Toast.makeText(context, "Offline speech recognition for $selectedLang is not available on this device. Please type the text.", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            )
-                        } else {
-                            Log.w("STUDENT-STT", "startListening locale=$localeTag; API lacks installed-language support query")
-                            speechRecognizer.startListening(intent)
-                        }
+                        speechRecognizer.startListening(intent)
                     } catch (e: Exception) {
                         isListening = false
-                        recognizerToDestroy?.destroy()
-                        Log.e("OFFLINE-STT", "Failed to initialize on-device recognition for $localeTag", e)
+                        Log.e("OFFLINE-STT", "Failed to initialize speech recognition for $localeTag", e)
+                        Log.e("STT-DEBUG", "error=initialization failed locale=$localeTag: ${e.javaClass.simpleName}: ${e.message}", e)
                         Log.e("STUDENT-STT", "error=initialization failed locale=$localeTag: ${e.javaClass.simpleName}: ${e.message}", e)
                         Toast.makeText(
                             context,
-                            "Offline speech recognition for $selectedLang is not available on this device. Please type the text.",
+                            "Offline voice recognition for $selectedLang is not available on this device.",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -804,8 +776,19 @@ fun StudentModeContent(
                     minLines = 3,
                     shape = RoundedCornerShape(16.dp),
                     trailingIcon = {
-                        IconButton(onClick = onStartSpeech) {
-                            Icon(Icons.Default.Mic, contentDescription = "Speak", tint = if (isListening) Color.Red else MaterialTheme.colorScheme.secondary)
+                        Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                            if (uiState.studentRecognizedText.isNotEmpty()) {
+                                IconButton(onClick = { viewModel.onStudentTextChanged("") }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear")
+                                }
+                            }
+                            IconButton(onClick = onStartSpeech) {
+                                Icon(
+                                    Icons.Default.Mic,
+                                    contentDescription = "Speak",
+                                    tint = if (isListening) Color.Red else MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 )
