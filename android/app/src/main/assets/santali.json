@@ -1,7 +1,72 @@
 [
   {
     "hindi": "नमस्ते",
-    "translation": "Johar",
+    "translation": "ᱡᱚᱦᱟᱨ",
     "phonetic": "Johar"
+  },
+  {
+    "hindi": "धन्यवाद",
+    "translation": "ᱥᱟᱨᱦᱟᱣ",
+    "phonetic": "Sarhao"
+  },
+  {
+    "hindi": "बैठ जाओ",
+    "translation": "ᱫᱩᱲᱩᱵ ᱯᱮ",
+    "phonetic": "Durop pe"
+  },
+  {
+    "hindi": "ध्यान से सुनो",
+    "translation": "ᱟᱧᱡᱚᱢ ᱢᱮ",
+    "phonetic": "Anjom me"
+  },
+  {
+    "hindi": "दोहराओ",
+    "translation": "ᱫᱚᱦᱲᱟᱭ ᱢᱮ",
+    "phonetic": "Dohray me"
+  },
+  {
+    "hindi": "लिखो",
+    "translation": "ᱚᱞ ᱢᱮ",
+    "phonetic": "Ol me"
+  },
+  {
+    "hindi": "पढ़ो",
+    "translation": "ᱯᱟᱲᱦᱟᱣ ᱢᱮ",
+    "phonetic": "Parhao me"
+  },
+  {
+    "hindi": "आओ",
+    "translation": "ᱦᱤᱡᱩᱜ ᱢᱮ",
+    "phonetic": "Hijug me"
+  },
+  {
+    "hindi": "जाओ",
+    "translation": "ᱥᱮᱱᱚᱜ ᱢᱮ",
+    "phonetic": "Senog me"
+  },
+  {
+    "hindi": "अच्छा",
+    "translation": "ᱵᱟᱹᱜᱤ",
+    "phonetic": "Bagi"
+  },
+  {
+    "hindi": "हाँ",
+    "translation": "ᱦᱮᱸ",
+    "phonetic": "Hen"
+  },
+  {
+    "hindi": "नहीं",
+    "translation": "ᱵᱟᱝ",
+    "phonetic": "Bang"
+  },
+  {
+    "hindi": "मुझे पानी चाहिए",
+    "translation": "ᱤᱧ ᱫᱟᱜ ᱞᱟᱹᱜᱤᱫ",
+    "phonetic": "Ing dag lagid"
+  },
+  {
+    "hindi": "समझ में नहीं आया",
+    "translation": "ᱵᱟᱹᱧ ᱵᱩᱡᱷᱟᱹᱣ ᱞᱮᱫᱟ",
+    "phonetic": "Bang bujhau leda"
   }
 ]

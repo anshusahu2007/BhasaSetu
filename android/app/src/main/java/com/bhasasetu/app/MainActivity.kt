@@ -10,6 +10,11 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.widget.Toast
@@ -153,8 +158,17 @@ class MainActivity : ComponentActivity() {
                                 "Mundari" -> Locale.forLanguageTag("unr-IN")
                                 else -> Locale.getDefault()
                             }
-                            it.setLanguage(locale)
-                            it.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+                            try {
+                                val languageStatus = it.setLanguage(locale)
+                                if (languageStatus == TextToSpeech.LANG_MISSING_DATA || languageStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
+                                    Log.w("TTS", "Installed TTS engine does not support ${locale.toLanguageTag()}")
+                                    Toast.makeText(context, "Text-to-speech for $language is not supported on this device.", Toast.LENGTH_SHORT).show()
+                                } else if (it.speak(text, TextToSpeech.QUEUE_FLUSH, null, null) == TextToSpeech.ERROR) {
+                                    Log.e("TTS", "Speech synthesis failed for ${locale.toLanguageTag()}")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("TTS", "Speech synthesis failed for ${locale.toLanguageTag()}", e)
+                            }
                         }
                     }
 
@@ -191,6 +205,7 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
 
     var isListening by remember { mutableStateOf(false) }
     var pendingRecognition by remember { mutableStateOf(false) }
+    var permissionResultGranted by remember { mutableStateOf(false) }
     var currentSpeechModeIsStudent by remember { mutableStateOf(false) }
 
     var tts: TextToSpeech? by remember { mutableStateOf(null) }
@@ -214,20 +229,21 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
                 "Mundari" -> Locale.forLanguageTag("unr-IN")
                 else -> Locale.getDefault()
             }
-            it.setLanguage(locale)
-            it.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+            try {
+                val languageStatus = it.setLanguage(locale)
+                if (languageStatus == TextToSpeech.LANG_MISSING_DATA || languageStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.w("TTS", "Installed TTS engine does not support ${locale.toLanguageTag()}")
+                    Toast.makeText(context, "Text-to-speech for $language is not supported on this device.", Toast.LENGTH_SHORT).show()
+                } else if (it.speak(text, TextToSpeech.QUEUE_FLUSH, null, null) == TextToSpeech.ERROR) {
+                    Log.e("TTS", "Speech synthesis failed for ${locale.toLanguageTag()}")
+                }
+            } catch (e: Exception) {
+                Log.e("TTS", "Speech synthesis failed for ${locale.toLanguageTag()}", e)
+            }
         }
     }
 
-    // Hybrid Speech Recognizer Logic
-    fun isNetworkAvailable(): Boolean {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = connectivityManager.activeNetwork ?: return false
-        val actType = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return actType.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }
-
-    // 100% Offline Vosk Speech Recognizer
+    // 100% Offline Vosk Speech Recognizer for Hindi
     val speechManager = remember { VoskOfflineSpeechManager(context) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -240,53 +256,210 @@ fun BhasaSetuMainContent(viewModel: TranslationViewModel, onOpenHistory: () -> U
     }
 
     val requestPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        Log.d("STUDENT-STT", "mode=${if (currentSpeechModeIsStudent) "Student" else "Teacher"} permissionGranted=$isGranted")
         if (isGranted && pendingRecognition) {
+            permissionResultGranted = true
+        } else {
             pendingRecognition = false
+            if (!isGranted) {
+                Log.e("STUDENT-STT", "error=RECORD_AUDIO permission denied")
+                Toast.makeText(context, "Microphone permission is required for speech recognition. You can still type text.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
-    val startSpeech = { isStudent: Boolean ->
+    val startSpeech = startSpeech@{ isStudent: Boolean ->
         currentSpeechModeIsStudent = isStudent
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+        val selectedLang = if (isStudent) uiState.selectedLanguage else "Hindi"
+        val hasMicPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        Log.d("STT-DEBUG", "mode=${if (isStudent) "Student" else "Teacher"}")
+        Log.d("STT-DEBUG", "language=$selectedLang")
+        Log.d("STT-DEBUG", "microphonePermission=$hasMicPermission")
+        Log.d("STUDENT-STT", "mode=${if (isStudent) "Student" else "Teacher"}")
+        Log.d("STUDENT-STT", "language=$selectedLang")
+        if (hasMicPermission) {
             if (isListening) {
+                Log.d("STT-DEBUG", "error=listening cancelled by user")
+                Log.d("STUDENT-STT", "error=listening cancelled by user")
                 speechManager.stopListening()
                 isListening = false
             } else {
-                coroutineScope.launch {
-                    val loaded = speechManager.ensureModelLoaded()
-                    if (loaded) {
-                        speechManager.startListening(
-                            onResult = { recognizedText ->
-                                isListening = false
-                                speechManager.stopListening()
-                                if (currentSpeechModeIsStudent) {
-                                    viewModel.onStudentSpeechRecognized(recognizedText)
-                                } else {
+                if (!isStudent) {
+                    // Teacher Mode: Hindi offline speech recognition via Vosk model
+                    Log.d("STT-DEBUG", "engine=VoskOfflineSpeechManager")
+                    Log.d("STT-DEBUG", "startListening=true")
+                    coroutineScope.launch {
+                        val loaded = speechManager.ensureModelLoaded()
+                        if (loaded) {
+                            speechManager.startListening(
+                                onResult = { recognizedText ->
+                                    isListening = false
+                                    speechManager.stopListening()
+                                    Log.d("STT-DEBUG", "final=$recognizedText")
                                     viewModel.onHindiTextChanged(recognizedText, source = "voice")
+                                },
+                                onError = { errorMsg ->
+                                    isListening = false
+                                    Log.e("STT-DEBUG", "error=$errorMsg")
+                                    Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
+                                },
+                                onListeningStarted = {
+                                    isListening = true
                                 }
-                            },
-                            onError = { errorMsg ->
-                                isListening = false
-                                Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
-                            },
-                            onListeningStarted = {
+                            )
+                        } else {
+                            Toast.makeText(context, "Offline speech model loading. Please wait...", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } else {
+                    val localeTag = when (selectedLang) {
+                        "Santali" -> "sat-IN"
+                        "Mundari" -> "unr-IN"
+                        "Ho" -> "hoc-IN"
+                        else -> "hi-IN"
+                    }
+                    val onDeviceRecognitionAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                        SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+                    Log.d("STT-DEBUG", "engine=SpeechRecognizer")
+                    Log.d("STT-DEBUG", "onDeviceAvailable=$onDeviceRecognitionAvailable locale=$localeTag")
+                    Log.d("STUDENT-STT", "engine=Android on-device SpeechRecognizer available=$onDeviceRecognitionAvailable locale=$localeTag")
+
+                    if (!onDeviceRecognitionAvailable) {
+                        Log.e("STT-DEBUG", "error=on-device SpeechRecognizer unavailable for $localeTag")
+                        Log.e("STUDENT-STT", "error=on-device SpeechRecognizer unavailable for $localeTag")
+                        Toast.makeText(
+                            context,
+                            "Offline speech recognition for $selectedLang is not available on this device. Please type the text.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@startSpeech
+                    }
+
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, localeTag)
+                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                    }
+
+                    var recognizerToDestroy: SpeechRecognizer? = null
+                    try {
+                        val speechRecognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                        recognizerToDestroy = speechRecognizer
+                        speechRecognizer.setRecognitionListener(object : RecognitionListener {
+                            override fun onReadyForSpeech(params: Bundle?) {
                                 isListening = true
+                                Log.d("STT-DEBUG", "startListening=true locale=$localeTag")
+                                Log.d("STUDENT-STT", "startListening locale=$localeTag")
                             }
-                        )
-                    } else {
-                        Toast.makeText(context, "Offline speech model loading. Please wait...", Toast.LENGTH_SHORT).show()
+                            override fun onBeginningOfSpeech() {}
+                            override fun onRmsChanged(rmsdB: Float) {}
+                            override fun onBufferReceived(buffer: ByteArray?) {}
+                            override fun onEndOfSpeech() { isListening = false }
+                            override fun onError(error: Int) {
+                                isListening = false
+                                speechRecognizer.destroy()
+                                Log.w("OFFLINE-STT", "On-device recognition failed for $localeTag: error=$error")
+                                Log.e("STT-DEBUG", "error=SpeechRecognizer error=$error locale=$localeTag")
+                                Log.e("STUDENT-STT", "error=SpeechRecognizer error=$error locale=$localeTag")
+                                Toast.makeText(
+                                    context,
+                                    "Offline speech recognition for $selectedLang is not available on this device. Please type the text.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            override fun onResults(results: Bundle?) {
+                                isListening = false
+                                speechRecognizer.destroy()
+                                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                if (!matches.isNullOrEmpty()) {
+                                    Log.d("STT-DEBUG", "final=${matches[0]}")
+                                    Log.d("STUDENT-STT", "final=${matches[0]}")
+                                    viewModel.onStudentSpeechRecognized(matches[0])
+                                } else {
+                                    Log.e("STT-DEBUG", "error=SpeechRecognizer returned no final results locale=$localeTag")
+                                    Log.e("STUDENT-STT", "error=SpeechRecognizer returned no final results locale=$localeTag")
+                                }
+                            }
+                            override fun onPartialResults(partialResults: Bundle?) {
+                                val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                                if (!partial.isNullOrBlank()) {
+                                    Log.d("STT-DEBUG", "partial=$partial")
+                                    Log.d("STUDENT-STT", "partial=$partial")
+                                }
+                            }
+                            override fun onEvent(eventType: Int, params: Bundle?) {}
+                        })
+
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            speechRecognizer.checkRecognitionSupport(
+                                intent,
+                                ContextCompat.getMainExecutor(context),
+                                object : RecognitionSupportCallback {
+                                    override fun onSupportResult(support: RecognitionSupport) {
+                                        val requestedLanguage = Locale.forLanguageTag(localeTag).language
+                                        val isInstalledOffline = support.installedOnDeviceLanguages.any {
+                                            Locale.forLanguageTag(it).language.equals(requestedLanguage, ignoreCase = true)
+                                        }
+                                        Log.d("STUDENT-STT", "installedOnDeviceLanguages=${support.installedOnDeviceLanguages} requested=$localeTag supportedOffline=$isInstalledOffline")
+                                        if (isInstalledOffline) {
+                                            try {
+                                                Log.d("STUDENT-STT", "startListening locale=$localeTag")
+                                                speechRecognizer.startListening(intent)
+                                            } catch (e: Exception) {
+                                                isListening = false
+                                                speechRecognizer.destroy()
+                                                Log.e("OFFLINE-STT", "Failed to start on-device recognition for $localeTag", e)
+                                                Log.e("STUDENT-STT", "error=failed to start locale=$localeTag: ${e.javaClass.simpleName}: ${e.message}", e)
+                                                Toast.makeText(context, "Offline speech recognition for $selectedLang is not available on this device. Please type the text.", Toast.LENGTH_LONG).show()
+                                            }
+                                        } else {
+                                            isListening = false
+                                            speechRecognizer.destroy()
+                                            Log.d("OFFLINE-STT", "No installed on-device language model for $localeTag")
+                                            Log.e("STUDENT-STT", "error=no installed offline speech model for $localeTag")
+                                            Toast.makeText(context, "Offline speech recognition for $selectedLang is not available on this device. Please type the text.", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+
+                                    override fun onError(error: Int) {
+                                        isListening = false
+                                        speechRecognizer.destroy()
+                                        Log.w("OFFLINE-STT", "Cannot verify on-device support for $localeTag: error=$error")
+                                        Log.e("STUDENT-STT", "error=checkRecognitionSupport error=$error locale=$localeTag")
+                                        Toast.makeText(context, "Offline speech recognition for $selectedLang is not available on this device. Please type the text.", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            )
+                        } else {
+                            Log.w("STUDENT-STT", "startListening locale=$localeTag; API lacks installed-language support query")
+                            speechRecognizer.startListening(intent)
+                        }
+                    } catch (e: Exception) {
+                        isListening = false
+                        recognizerToDestroy?.destroy()
+                        Log.e("OFFLINE-STT", "Failed to initialize on-device recognition for $localeTag", e)
+                        Log.e("STUDENT-STT", "error=initialization failed locale=$localeTag: ${e.javaClass.simpleName}: ${e.message}", e)
+                        Toast.makeText(
+                            context,
+                            "Offline speech recognition for $selectedLang is not available on this device. Please type the text.",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
             }
         } else {
+            Log.w("STUDENT-STT", "mode=${if (isStudent) "Student" else "Teacher"} language=$selectedLang requesting RECORD_AUDIO permission")
             pendingRecognition = true
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
-    LaunchedEffect(pendingRecognition) {
-        if (pendingRecognition && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+    LaunchedEffect(pendingRecognition, permissionResultGranted) {
+        if (pendingRecognition && permissionResultGranted &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
             pendingRecognition = false
+            permissionResultGranted = false
             startSpeech(currentSpeechModeIsStudent)
         }
     }
@@ -539,14 +712,24 @@ fun TeacherModeContent(
                     )
                 }
 
+                Text("Teacher Quick Cards", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+
                 QuickPhraseChips(onChipClick = { 
                     viewModel.onHindiTextChanged(it)
+                    Log.d("TRANSLATION", "[TRACE-1] UI source=Hindi")
+                    Log.d("TRANSLATION", "[TRACE-1] UI target=${uiState.selectedLanguage}")
+                    Log.d("TRANSLATION", "[TRACE-1] UI input=$it")
                     viewModel.translate()
                 })
 
                 TranslateButton(
                     isLoading = uiState.isLoading,
-                    onClick = { viewModel.translate() }
+                    onClick = {
+                        Log.d("TRANSLATION", "[TRACE-1] UI source=Hindi")
+                        Log.d("TRANSLATION", "[TRACE-1] UI target=${uiState.selectedLanguage}")
+                        Log.d("TRANSLATION", "[TRACE-1] UI input=${uiState.hindiText}")
+                        viewModel.translate()
+                    }
                 )
             }
         }
@@ -592,25 +775,48 @@ fun StudentModeContent(
                     onSelected = { viewModel.onLanguageSelected(it) }
                 )
 
-                if (uiState.selectedLanguage == "Mundari" || uiState.selectedLanguage == "Ho") {
-                    Text(
-                        "${uiState.selectedLanguage} voice input is not supported on this device. Please enter text manually.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
+                if (uiState.selectedLanguage == "Santali") {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.School, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Ol Chiki Script Supported (ᱥᱟᱱᱛᱟᱲᱤ)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
+
+                Text("${uiState.selectedLanguage} Input", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
 
                 OutlinedTextField(
                     value = uiState.studentRecognizedText,
                     onValueChange = { viewModel.onStudentTextChanged(it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("${uiState.selectedLanguage} Input") },
+                    placeholder = { Text("Type in ${uiState.selectedLanguage}...") },
                     minLines = 3,
                     shape = RoundedCornerShape(16.dp),
                     trailingIcon = {
                         IconButton(onClick = onStartSpeech) {
                             Icon(Icons.Default.Mic, contentDescription = "Speak", tint = if (isListening) Color.Red else MaterialTheme.colorScheme.secondary)
                         }
+                    }
+                )
+
+                Text("Student Need Cards", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+
+                StudentNeedChips(
+                    language = uiState.selectedLanguage,
+                    onChipClick = { phrase ->
+                        viewModel.onStudentTextChanged(phrase)
+                        viewModel.translateToHindi()
                     }
                 )
 
@@ -633,7 +839,7 @@ fun StudentModeContent(
         AnimatedVisibility(visible = uiState.studentHindiResult.isNotEmpty(), enter = fadeIn() + expandVertically()) {
             TranslationResultCard(
                 result = uiState.studentHindiResult,
-                subtitle = "Hindi Translation",
+                subtitle = "Hindi Translation for Teacher",
                 status = uiState.studentTranslationStatus,
                 phonetic = null,
                 onSpeak = onSpeakResult
@@ -682,7 +888,36 @@ fun LanguageSelector(selected: String, onSelected: (String) -> Unit) {
 
 @Composable
 fun QuickPhraseChips(onChipClick: (String) -> Unit) {
-    val phrases = listOf("नमस्ते", "बैठ जाओ", "ध्यान से सुनो", "दोहराओ")
+    val phrases = listOf("नमस्ते", "बैठ जाओ", "ध्यान से सुनो", "दोहराओ", "लिखो", "पढ़ो")
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        phrases.forEach { phrase ->
+            Surface(
+                modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { onChipClick(phrase) },
+                color = MaterialTheme.colorScheme.secondary,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    text = phrase,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun StudentNeedChips(language: String, onChipClick: (String) -> Unit) {
+    val phrases = when (language) {
+        "Santali" -> listOf("ᱡᱚᱦᱟᱨ", "ᱥᱟᱨᱦᱟᱣ", "ᱤᱧ ᱫᱟᱜ ᱞᱟᱹᱜᱤᱫ", "ᱵᱟᱹᱧ ᱵᱩᱡᱷᱟᱹᱣ ᱞᱮᱫᱟ")
+        "Mundari" -> listOf("Johar", "Sarhao", "Ing da lagid", "Ka bujhola")
+        "Ho" -> listOf("Johar", "Sarhao", "Ing da lagid", "Ka bujhola")
+        else -> listOf("Johar", "Sarhao")
+    }
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -739,7 +974,6 @@ fun TranslationResultCard(
     phonetic: String?,
     onSpeak: () -> Unit
 ) {
-    val clipboardManager = LocalContext.current.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -776,7 +1010,22 @@ fun TranslationResultCard(
                 textAlign = TextAlign.Start
             )
 
-            if (phonetic != null && phonetic.isNotEmpty()) {
+            if (status.isNotEmpty()) {
+                Surface(
+                    color = if (status.contains("offline", ignoreCase = true)) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.secondary,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = status,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (status.contains("offline", ignoreCase = true)) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            if (!phonetic.isNullOrEmpty()) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.secondary,

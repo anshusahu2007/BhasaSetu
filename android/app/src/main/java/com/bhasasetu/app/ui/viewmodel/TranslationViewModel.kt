@@ -15,8 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.ConnectException
-import java.net.UnknownHostException
 
 data class TranslationUiState(
     val hindiText: String = "",
@@ -108,8 +106,13 @@ class TranslationViewModel(
 
     fun translate() {
         val currentState = _uiState.value
+        Log.d("TRANSLATION", "[TRACE-2] ViewModel source=Hindi")
+        Log.d("TRANSLATION", "[TRACE-2] ViewModel target=${currentState.selectedLanguage}")
+        Log.d("TRANSLATION", "[TRACE-2] ViewModel input=${currentState.hindiText}")
         if (currentState.hindiText.isBlank()) {
             _uiState.value = currentState.copy(error = "Please enter Hindi text")
+            Log.d("TRANSLATION", "[TRACE-7] FINAL result=Please enter Hindi text")
+            Log.d("TRANSLATION", "[TRACE-7] FINAL method=validation")
             return
         }
 
@@ -118,7 +121,7 @@ class TranslationViewModel(
             
             try {
                 val result = withContext(Dispatchers.IO) {
-                    repository.findTranslation(
+                    repository.findTranslationResult(
                         text = currentState.hindiText, 
                         sourceLanguage = "Hindi", 
                         targetLanguage = currentState.selectedLanguage,
@@ -127,19 +130,24 @@ class TranslationViewModel(
                 }
 
                 if (result != null) {
-                    val status = if (result.id != 0L) "Translation found offline" else "Translated using server"
+                    val status = when (result.sourceMethod) {
+                        "database" -> "Translation found offline (Database)"
+                        "onnx" -> "Translation completed offline (ONNX AI Model)"
+                        else -> "Translated using server"
+                    }
                     _uiState.value = _uiState.value.copy(
-                        translation = result.translatedText,
-                        phonetic = result.phoneticText,
+                        translation = result.entity.translatedText,
+                        phonetic = result.entity.phoneticText,
                         isLoading = false,
                         translationStatus = status
                     )
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL result=${result.entity.translatedText}")
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL method=${result.sourceMethod}")
                 } else {
-                    val isOffline = !repository.isNetworkAvailable()
-                    val status = if (isOffline) {
-                        "Offline translation is not available for this sentence. Connect to the translation server or use a saved/local translation."
-                    } else if (currentState.selectedLanguage == "Ho") {
+                    val status = if (currentState.selectedLanguage == "Ho") {
                         "Ho dictionary entry not available"
+                    } else if (!repository.isNetworkAvailable()) {
+                        "Offline translation is not available for this sentence."
                     } else {
                         "Translation not found"
                     }
@@ -150,28 +158,39 @@ class TranslationViewModel(
                         isLoading = false,
                         translationStatus = status
                     )
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL result=Not found")
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL method=none")
                 }
             } catch (e: Exception) {
-                Log.e("TranslationVM", "Translation Error", e)
+                Log.e("TRANSLATION", "FULL EXCEPTION", e)
                 val isOffline = !repository.isNetworkAvailable()
-                val status = if (isOffline) {
-                    "Offline translation is not available for this sentence. Connect to the translation server or use a saved/local translation."
+                val status = if (currentState.selectedLanguage == "Ho") {
+                    "Ho dictionary entry not available"
+                } else if (isOffline) {
+                    "Offline translation is not available for this sentence."
                 } else {
                     "Unable to connect to translation server"
                 }
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     translationStatus = status,
-                    error = "Network/Connection error. Check backend."
+                    error = if (isOffline) "Offline mode active" else "Network error"
                 )
+                Log.e("TRANSLATION", "[TRACE-7] FINAL result=ERROR")
+                Log.e("TRANSLATION", "[TRACE-7] FINAL method=exception")
             }
         }
     }
 
     fun translateToHindi() {
         val currentState = _uiState.value
+        Log.d("TRANSLATION", "[TRACE-2] ViewModel source=${currentState.selectedLanguage}")
+        Log.d("TRANSLATION", "[TRACE-2] ViewModel target=Hindi")
+        Log.d("TRANSLATION", "[TRACE-2] ViewModel input=${currentState.studentRecognizedText}")
         if (currentState.studentRecognizedText.isBlank()) {
             _uiState.value = currentState.copy(studentError = "No text to translate")
+            Log.d("TRANSLATION", "[TRACE-7] FINAL result=No text to translate")
+            Log.d("TRANSLATION", "[TRACE-7] FINAL method=validation")
             return
         }
 
@@ -180,7 +199,7 @@ class TranslationViewModel(
             
             try {
                 val result = withContext(Dispatchers.IO) {
-                    repository.findTranslation(
+                    repository.findTranslationResult(
                         text = currentState.studentRecognizedText, 
                         sourceLanguage = currentState.selectedLanguage, 
                         targetLanguage = "Hindi",
@@ -189,18 +208,23 @@ class TranslationViewModel(
                 }
 
                 if (result != null) {
-                    val status = if (result.id != 0L) "Translation found offline" else "Translated using server"
+                    val status = when (result.sourceMethod) {
+                        "database" -> "Translation found offline (Database)"
+                        "onnx" -> "Translation completed offline (ONNX AI Model)"
+                        else -> "Translated using server"
+                    }
                     _uiState.value = _uiState.value.copy(
-                        studentHindiResult = result.translatedText,
+                        studentHindiResult = result.entity.translatedText,
                         isStudentLoading = false,
                         studentTranslationStatus = status
                     )
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL result=${result.entity.translatedText}")
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL method=${result.sourceMethod}")
                 } else {
-                    val isOffline = !repository.isNetworkAvailable()
-                    val status = if (isOffline) {
-                        "Offline translation is not available for this sentence. Connect to the translation server or use a saved/local translation."
-                    } else if (currentState.selectedLanguage == "Ho") {
+                    val status = if (currentState.selectedLanguage == "Ho") {
                         "Ho dictionary entry not available"
+                    } else if (!repository.isNetworkAvailable()) {
+                        "Offline translation is not available for this sentence."
                     } else {
                         "Translation not found"
                     }
@@ -210,20 +234,26 @@ class TranslationViewModel(
                         isStudentLoading = false,
                         studentTranslationStatus = status
                     )
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL result=Not found")
+                    Log.d("TRANSLATION", "[TRACE-7] FINAL method=none")
                 }
             } catch (e: Exception) {
-                Log.e("TranslationVM", "Student Translation Error", e)
+                Log.e("TRANSLATION", "FULL EXCEPTION", e)
                 val isOffline = !repository.isNetworkAvailable()
-                val status = if (isOffline) {
-                    "Offline translation is not available for this sentence. Connect to the translation server or use a saved/local translation."
+                val status = if (currentState.selectedLanguage == "Ho") {
+                    "Ho dictionary entry not available"
+                } else if (isOffline) {
+                    "Offline translation is not available for this sentence."
                 } else {
                     "Unable to connect to translation server"
                 }
                 _uiState.value = _uiState.value.copy(
                     isStudentLoading = false,
                     studentTranslationStatus = status,
-                    studentError = "Network error. Check connection."
+                    studentError = if (isOffline) "Offline mode active" else "Network error"
                 )
+                Log.e("TRANSLATION", "[TRACE-7] FINAL result=ERROR")
+                Log.e("TRANSLATION", "[TRACE-7] FINAL method=exception")
             }
         }
     }

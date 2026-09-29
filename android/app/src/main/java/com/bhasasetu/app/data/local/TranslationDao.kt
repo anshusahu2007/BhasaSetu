@@ -8,8 +8,14 @@ import androidx.room.Query
 @Dao
 interface TranslationDao {
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(translations: List<TranslationEntity>)
+
+    @Query("""
+        SELECT * FROM translations 
+        WHERE language = :targetLanguage
+    """)
+    suspend fun getTranslationsForLanguage(targetLanguage: String): List<TranslationEntity>
 
     @Query("""
         SELECT * FROM translations 

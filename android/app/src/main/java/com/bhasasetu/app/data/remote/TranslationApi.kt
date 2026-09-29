@@ -1,6 +1,8 @@
 package com.bhasasetu.app.data.remote
 
 import kotlinx.serialization.Serializable
+import okhttp3.ResponseBody
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
 
@@ -22,5 +24,5 @@ data class TranslationResponse(
 
 interface TranslationApi {
     @POST("translate")
-    suspend fun translate(@Body request: TranslationRequest): TranslationResponse
+    suspend fun translate(@Body request: TranslationRequest): Response<ResponseBody>
 }

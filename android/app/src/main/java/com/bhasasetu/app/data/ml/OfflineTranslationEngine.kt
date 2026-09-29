@@ -44,11 +44,13 @@ class OfflineTranslationEngine(private val context: Context) {
     fun isModelAvailable(): Boolean {
         return try {
             val assetsList = context.assets.list("models") ?: emptyArray()
-            assetsList.contains(encoderFileName) &&
-                    assetsList.contains(decoderFileName) &&
-                    assetsList.contains(srcDictFileName) &&
-                    assetsList.contains(tgtDictFileName)
+            val hasEncoder = assetsList.contains(encoderFileName)
+            val hasDecoder = assetsList.contains(decoderFileName)
+            val hasSrcDict = assetsList.contains(srcDictFileName)
+            val hasTgtDict = assetsList.contains(tgtDictFileName)
+            hasEncoder && hasDecoder && hasSrcDict && hasTgtDict
         } catch (e: Exception) {
+            Log.e("OFFLINE-ML", "[OFFLINE-ML] EXCEPTION=checking model assets", e)
             false
         }
     }
@@ -87,41 +89,56 @@ class OfflineTranslationEngine(private val context: Context) {
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] BOS token id = $bosTokenId")
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] EOS token id = $eosTokenId")
 
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] Model loading")
-                ortEnv = OrtEnvironment.getEnvironment()
+                val encName = encoderFileName
+                val decName = decoderFileName
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] encoder asset = $encName")
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] decoder asset = $decName")
+                val environment = OrtEnvironment.getEnvironment()
+                ortEnv = environment
 
-                val encoderFile = extractAssetIfNeeded(encoderFileName)
-                val decoderFile = extractAssetIfNeeded(decoderFileName)
+                val encoderFile = extractAssetIfNeeded(encName)
+                val decoderFile = extractAssetIfNeeded(decName)
+                require(encoderFile.isFile && encoderFile.length() > 0L) { "Encoder ONNX asset is missing or empty: ${encoderFile.absolutePath}" }
+                require(decoderFile.isFile && decoderFile.length() > 0L) { "Decoder ONNX asset is missing or empty: ${decoderFile.absolutePath}" }
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] encoder size = ${encoderFile.length()}")
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] decoder size = ${decoderFile.length()}")
 
                 val options = OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(4)
                 }
 
-                val encSession = ortEnv?.createSession(encoderFile.absolutePath, options)
-                val decSession = ortEnv?.createSession(decoderFile.absolutePath, options)
+                val encSession = environment.createSession(encoderFile.absolutePath, options)
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder session loaded successfully")
+                val decSession = environment.createSession(decoderFile.absolutePath, options)
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder session loaded successfully")
+
+                require(encSession.inputNames.containsAll(setOf("input_ids", "attention_mask"))) {
+                    "Unexpected encoder inputs: ${encSession.inputNames}"
+                }
+                require(encSession.outputNames.contains("last_hidden_state")) {
+                    "Unexpected encoder outputs: ${encSession.outputNames}"
+                }
+                require(decSession.inputNames.containsAll(setOf("input_ids", "encoder_hidden_states", "encoder_attention_mask"))) {
+                    "Unexpected decoder inputs: ${decSession.inputNames}"
+                }
+                require(decSession.outputNames.contains("logits")) {
+                    "Unexpected decoder outputs: ${decSession.outputNames}"
+                }
 
                 encoderSession = encSession
                 decoderSession = decSession
 
-                if (encSession != null) {
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder input names = ${encSession.inputNames}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder input shapes = ${encSession.inputInfo.mapValues { it.value.info }}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder output names = ${encSession.outputNames}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder output shapes = ${encSession.outputInfo.mapValues { it.value.info }}")
-                }
-
-                if (decSession != null) {
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder input names = ${decSession.inputNames}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder input shapes = ${decSession.inputInfo.mapValues { it.value.info }}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder output names = ${decSession.outputNames}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder output shapes = ${decSession.outputInfo.mapValues { it.value.info }}")
-                }
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder input names = ${encSession.inputNames}")
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoder output names = ${encSession.outputNames}")
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder input names = ${decSession.inputNames}")
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder output names = ${decSession.outputNames}")
 
                 isInitialized = true
                 Log.d("OFFLINE-ML", "Model and Tokenizer loaded successfully")
             } catch (e: Exception) {
-                Log.e("OFFLINE-ML", "[OFFLINE-ML] Translation failed - initialization error: ${e.message}", e)
+                Log.e("OFFLINE-ML", "[OFFLINE-ML] EXCEPTION=initializing ONNX sessions: ${e.message}", e)
                 isInitialized = false
+                throw e
             }
         }
     }
@@ -134,13 +151,13 @@ class OfflineTranslationEngine(private val context: Context) {
         val targetFile = File(modelsDir, fileName)
 
         val assetStreamSize = try {
-            context.assets.open("models/$fileName").use { it.available().toLong() }
+            context.assets.openFd("models/$fileName").use { it.length }
         } catch (e: Exception) {
             -1L
         }
 
         if (!targetFile.exists() || targetFile.length() == 0L || (assetStreamSize > 0L && targetFile.length() != assetStreamSize)) {
-            Log.d("OFFLINE-ML", "Extracting asset models/$fileName to ${targetFile.absolutePath} (Asset size: $assetStreamSize, Current file size: ${targetFile.length()})")
+            Log.d("OFFLINE-ML", "Extracting asset models/$fileName to ${targetFile.absolutePath} (Asset size: $assetStreamSize)")
             context.assets.open("models/$fileName").use { inputStream ->
                 FileOutputStream(targetFile).use { outputStream ->
                     inputStream.copyTo(outputStream)
@@ -157,8 +174,20 @@ class OfflineTranslationEngine(private val context: Context) {
      * Translates sentence offline using ONNX model inference.
      */
     suspend fun translate(text: String, srcLang: String, tgtLang: String): String? {
+        Log.d("OFFLINE-ML", "[OFFLINE-ML] START")
+        Log.d("OFFLINE-ML", "[OFFLINE-ML] source=$srcLang")
+        Log.d("OFFLINE-ML", "[OFFLINE-ML] target=$tgtLang")
+        Log.d("OFFLINE-ML", "[OFFLINE-ML] input=$text")
+
         if (!isModelAvailable()) {
-            Log.e("OFFLINE-ML", "[OFFLINE-ML] Translation failed - model files missing in assets")
+            val availableAssets = try {
+                context.assets.list("models")?.toSet().orEmpty()
+            } catch (e: Exception) {
+                emptySet()
+            }
+            val requiredAssets = listOf(encoderFileName, decoderFileName, srcDictFileName, tgtDictFileName)
+            val missingAssets = requiredAssets.filterNot(availableAssets::contains)
+            Log.e("OFFLINE-ML", "[OFFLINE-ML] RESULT=UNAVAILABLE; missingAssets=$missingAssets; availableAssets=${availableAssets.sorted()}")
             return null
         }
 
@@ -167,19 +196,25 @@ class OfflineTranslationEngine(private val context: Context) {
         }
 
         if (!isInitialized) {
-            Log.e("OFFLINE-ML", "[OFFLINE-ML] Translation failed - engine not initialized")
-            return null
+            throw IllegalStateException("ONNX sessions were not initialized")
         }
 
         return withContext(Dispatchers.Default) {
             try {
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] Encoding")
 
-                val srcTag = mapLanguageTag(srcLang)
-                val tgtTag = mapLanguageTag(tgtLang)
+                val srcTag = languageTag(srcLang)
+                val tgtTag = languageTag(tgtLang)
 
-                val srcLangId = srcVocab[srcTag] ?: 8L
-                val tgtLangId = srcVocab[tgtTag] ?: 29925L
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] sourceTag=$srcTag targetTag=$tgtTag")
+
+                if (!srcVocab.containsKey(srcTag) || !srcVocab.containsKey(tgtTag)) {
+                    Log.w("OFFLINE-ML", "[OFFLINE-ML] RESULT=UNSUPPORTED; sourceTag=$srcTag targetTag=$tgtTag")
+                    return@withContext null
+                }
+
+                val srcLangId = checkNotNull(srcVocab[srcTag]) { "Source language token missing: $srcTag" }
+                val tgtLangId = checkNotNull(srcVocab[tgtTag]) { "Target language token missing: $tgtTag" }
 
                 val tokenIds = tokenizeText(text)
                 val fullInputIds = mutableListOf<Long>().apply {
@@ -191,34 +226,25 @@ class OfflineTranslationEngine(private val context: Context) {
 
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] source token IDs = $tokenIds")
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] target token IDs = ${fullInputIds.toList()}")
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] source language token/id for Hindi = $srcLangId ($srcTag)")
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] target language token/id for $tgtLang = $tgtLangId ($tgtTag)")
 
-                val env = ortEnv ?: return@withContext null
-                val encSession = encoderSession ?: return@withContext null
-                val decSession = decoderSession ?: return@withContext null
+                val env = checkNotNull(ortEnv) { "ONNX Runtime environment is not initialized" }
+                val encSession = checkNotNull(encoderSession) { "Encoder session is not initialized" }
+                val decSession = checkNotNull(decoderSession) { "Decoder session is not initialized" }
 
                 val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(fullInputIds), longArrayOf(1, fullInputIds.size.toLong()))
                 val maskArray = LongArray(fullInputIds.size) { 1L }
                 val maskTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(maskArray), longArrayOf(1, fullInputIds.size.toLong()))
 
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] encoder input_ids shape = [1, ${fullInputIds.size}]")
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] encoder attention_mask shape = [1, ${maskArray.size}]")
-
                 val encOutputs = encSession.run(mapOf("input_ids" to inputTensor, "attention_mask" to maskTensor))
-                val encoderHiddenStates = encOutputs[0] as OnnxTensor
-
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] encoder output shape = ${encoderHiddenStates.info.shape.joinToString()}")
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] encoder output name = ${encSession.outputNames}")
+                val encoderHiddenStates = encOutputs.get("last_hidden_state").orElseThrow {
+                    IllegalStateException("Encoder output last_hidden_state is missing")
+                } as OnnxTensor
 
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] Decoder generation")
 
                 val decInputTokens = mutableListOf(eosTokenId)
                 val genTokens = mutableListOf<Long>()
 
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] initial decoder token IDs = $decInputTokens")
-
-                var stoppedBecauseEOS = false
                 var step = 0
 
                 while (step < maxSeqLength) {
@@ -231,18 +257,10 @@ class OfflineTranslationEngine(private val context: Context) {
                         "encoder_attention_mask" to maskTensor
                     )
 
-                    if (step == 0) {
-                        Log.d("OFFLINE-ML", "[OFFLINE-ML] decoder input_ids shape = [1, ${decInputArray.size}]")
-                        Log.d("OFFLINE-ML", "[OFFLINE-ML] decoder encoder_hidden_states shape = ${encoderHiddenStates.info.shape.joinToString()}")
-                        Log.d("OFFLINE-ML", "[OFFLINE-ML] decoder attention_mask shape = [1, ${maskArray.size}]")
-                    }
-
                     val decOutputs = decSession.run(decInputs)
-                    val logitsTensor = decOutputs[0] as OnnxTensor
-
-                    if (step == 0) {
-                        Log.d("OFFLINE-ML", "[OFFLINE-ML] decoder logits shape = ${logitsTensor.info.shape.joinToString()}")
-                    }
+                    val logitsTensor = decOutputs.get("logits").orElseThrow {
+                        IllegalStateException("Decoder output logits is missing")
+                    } as OnnxTensor
 
                     val lastPos = decInputTokens.size - 1
                     val stepAnalysis = getLogitsStepAnalysis(logitsTensor, lastPos)
@@ -251,17 +269,9 @@ class OfflineTranslationEngine(private val context: Context) {
                     logitsTensor.close()
                     decOutputs.close()
 
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] step=$step inputIds=$decInputTokens")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] step=$step logitsShape=${stepAnalysis.shape}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] step=$step selectedTokenId=${stepAnalysis.selectedTokenId}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] step=$step selectedTokenLogit=${stepAnalysis.selectedTokenLogit}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] step=$step topTokenIds=${stepAnalysis.topTokenIds}")
-                    Log.d("OFFLINE-ML", "[OFFLINE-ML] step=$step topTokenScores=${stepAnalysis.topTokenScores}")
-
                     val nextToken = stepAnalysis.selectedTokenId
 
                     if (nextToken == eosTokenId) {
-                        stoppedBecauseEOS = true
                         break
                     }
 
@@ -276,28 +286,27 @@ class OfflineTranslationEngine(private val context: Context) {
                 encOutputs.close()
 
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] generatedTokenIds=$genTokens")
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] generatedTokenCount=${genTokens.size}")
-                Log.d("OFFLINE-ML", "[OFFLINE-ML] stoppedBecauseEOS=$stoppedBecauseEOS")
 
                 val resultText = detokenize(genTokens)
                 Log.d("OFFLINE-ML", "[OFFLINE-ML] decodedText='$resultText'")
+                Log.d("OFFLINE-ML", "[OFFLINE-ML] RESULT=$resultText")
+                Log.d("ONNX", "translation=$resultText")
 
                 if (resultText.isNotBlank()) {
                     Log.d("OFFLINE-ML", "[OFFLINE-ML] Translation success: $resultText")
                     resultText
                 } else {
-                    Log.e("OFFLINE-ML", "[OFFLINE-ML] Translation failed: empty result")
+                    Log.e("OFFLINE-ML", "[OFFLINE-ML] RESULT=EMPTY; generatedTokenIds=$genTokens")
                     null
                 }
             } catch (e: Exception) {
-                Log.e("OFFLINE-ML", "[OFFLINE-ML] CRITICAL DECODER EXCEPTION: ${e.message}", e)
-                e.printStackTrace()
-                null
+                Log.e("OFFLINE-ML", "[OFFLINE-ML] EXCEPTION=${e.javaClass.simpleName}: ${e.message}", e)
+                throw e
             }
         }
     }
 
-    private fun mapLanguageTag(langName: String): String {
+    fun languageTag(langName: String): String {
         return when (langName.lowercase()) {
             "hindi" -> "hin_Deva"
             "santali" -> "sat_Olck"
@@ -313,16 +322,12 @@ class OfflineTranslationEngine(private val context: Context) {
 
         for (w in words) {
             if (w.isBlank()) continue
-            val prefixed1 = "▁$w"
-            val prefixed2 = " $w"
-            val prefixed3 = "\u2581$w"
+            val prefixed = "\u2581$w"
 
             when {
-                srcVocab.containsKey(prefixed1) -> result.add(srcVocab[prefixed1]!!)
-                srcVocab.containsKey(prefixed2) -> result.add(srcVocab[prefixed2]!!)
-                srcVocab.containsKey(prefixed3) -> result.add(srcVocab[prefixed3]!!)
+                srcVocab.containsKey(prefixed) -> result.add(srcVocab[prefixed]!!)
                 srcVocab.containsKey(w) -> result.add(srcVocab[w]!!)
-                else -> subwordTokenize("▁$w", result)
+                else -> subwordTokenize("\u2581$w", result)
             }
         }
         return result
@@ -396,4 +401,3 @@ class OfflineTranslationEngine(private val context: Context) {
         return raw.trim().replace("\\s+".toRegex(), " ")
     }
 }
-

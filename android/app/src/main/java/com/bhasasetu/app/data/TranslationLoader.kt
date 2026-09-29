@@ -1,6 +1,7 @@
 package com.bhasasetu.app.data
 
 import android.content.Context
+import android.util.Log
 import com.bhasasetu.app.data.local.TranslationEntity
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -23,6 +24,7 @@ class TranslationLoader(private val context: Context) {
         return try {
             val jsonString = context.assets.open(fileName).bufferedReader().use { it.readText() }
             val list = json.decodeFromString<List<JsonTranslation>>(jsonString)
+            Log.d("DICTIONARY", "Loaded ${list.size} $language entries from $fileName")
             list.map {
                 TranslationEntity(
                     hindiText = it.hindi,
@@ -32,7 +34,7 @@ class TranslationLoader(private val context: Context) {
                 )
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("DICTIONARY", "Failed to load $fileName for $language: ${e.message}", e)
             emptyList()
         }
     }
